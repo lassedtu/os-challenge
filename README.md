@@ -48,6 +48,6 @@ The focus of this version of the code is simply to get a server up and running a
 
 ## Extra notes
 
-The server must be at the root folder as specified in the os challenge doc, however the build artifacts / object files are put into the /build folder.
+The server executable must be at the root folder as specified in the os challenge doc, however the build artifacts / object files are placed in the /build folder.
 
 The src folder contains all the code associated with the project.
