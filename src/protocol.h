@@ -20,6 +20,7 @@ struct request
     uint64_t start;
     // The ending value of the range to search for the hash.
     uint64_t end;
+    uint8_t priority;
 };
 
 /**

@@ -5,17 +5,20 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-#include "connection.h"
+#include "hash_cache.h"
+#include "task_queue.h"
+#include "worker_pool.h"
 
 #include <errno.h>
 #include <netinet/in.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+static volatile sig_atomic_t stop_requested;
 
 /**
  * @brief Parses a string to an integer port number
@@ -31,6 +34,12 @@ static int parse_port(const char *text)
         return -1;
     }
     return (int)port;
+}
+
+static void request_stop(int signal_number)
+{
+    (void)signal_number;
+    stop_requested = 1;
 }
 
 int main(int argc, char **argv)
@@ -49,6 +58,8 @@ int main(int argc, char **argv)
     }
 
     signal(SIGPIPE, SIG_IGN);
+    signal(SIGINT, request_stop);
+    signal(SIGTERM, request_stop);
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
@@ -78,7 +89,11 @@ int main(int argc, char **argv)
         return EXIT_FAILURE;
     }
 
-    for (;;)
+    hash_cache_init();
+    task_queue_init();
+    worker_pool_start();
+
+    while (!stop_requested)
     {
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd < 0)
@@ -88,26 +103,18 @@ int main(int argc, char **argv)
                 continue;
             }
             perror("accept");
-            close(server_fd);
-            return EXIT_FAILURE;
+            break;
         }
 
-        int *client_fd_copy = malloc(sizeof(*client_fd_copy));
-        if (client_fd_copy == NULL)
-        {
-            close(client_fd);
-            continue;
-        }
-        *client_fd_copy = client_fd;
-
-        pthread_t thread;
-        int result = pthread_create(&thread, NULL, handle_connection, client_fd_copy);
-        if (result != 0)
-        {
-            free(client_fd_copy);
-            close(client_fd);
-            continue;
-        }
-        pthread_detach(thread);
+        struct task task;
+        task.client_fd = client_fd;
+        task_queue_push(task);
     }
+
+    task_queue_shutdown();
+    worker_pool_join();
+    task_queue_destroy();
+    hash_cache_destroy();
+    close(server_fd);
+    return EXIT_SUCCESS;
 }
