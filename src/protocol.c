@@ -19,6 +19,7 @@ int parse_request(const unsigned char packet[PACKET_REQUEST_SIZE], struct reques
 
     request->start = be64toh(start_wire);
     request->end = be64toh(end_wire);
+    request->priority = packet[PACKET_REQUEST_PRIO_OFFSET];
     return 0;
 }
 
