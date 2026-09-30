@@ -1,22 +1,12 @@
-CC ?= gcc
-CFLAGS ?= -O3 -Wall -Wextra -Wpedantic
-CPPFLAGS ?= -D_DEFAULT_SOURCE
-LDFLAGS ?=
-LDLIBS ?= -pthread
+CC = gcc
+CFLAGS = -Wall -Wextra -O3 -pthread
 
-.PHONY: all clean
 
-SOURCES := $(wildcard src/*.c)
-OBJECTS := $(patsubst src/%.c,build/%.o,$(SOURCES))
+server: src/server.c src/queue.c src/cache.c src/queue.h src/cache.h src/lonesha256.h src/messages.h
+	$(CC) $(CFLAGS) src/server.c src/cache.c src/queue.c -o server
 
-all: server
-
-server: $(OBJECTS)
-	$(CC) $(LDFLAGS) -o $@ $(OBJECTS) $(LDLIBS)
-
-build/%.o: src/%.c
-	mkdir -p build
-	$(CC) $(CPPFLAGS) $(CFLAGS) -Isrc -c $< -o $@
+run: server
+	./server 5003
 
 clean:
-	rm -rf build server
+	rm -f server
