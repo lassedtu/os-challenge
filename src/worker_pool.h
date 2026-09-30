@@ -7,7 +7,9 @@
 #define WORKER_POOL_H
 
 // Defines the number of worker threads in the pool
+#ifndef WORKER_COUNT
 #define WORKER_COUNT 8
+#endif
 
 /**
  * @brief Starts the worker pool

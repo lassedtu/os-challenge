@@ -26,6 +26,9 @@ static void handle_task(int client_fd)
     if (read_all(client_fd, request_packet, sizeof(request_packet)) == 0 &&
         parse_request(request_packet, &request) == 0)
     {
+#ifdef DISABLE_CACHE
+        find_hash_answer(request.hash, request.start, request.end, &answer);
+#else
         if (hash_cache_lookup(request.hash, &answer) == 0)
         {
             if (find_hash_answer(request.hash, request.start, request.end, &answer) == 0)
@@ -33,6 +36,7 @@ static void handle_task(int client_fd)
                 hash_cache_insert(request.hash, answer);
             }
         }
+#endif
         encode_response(answer, response_packet);
         write_all(client_fd, response_packet, sizeof(response_packet));
     }
