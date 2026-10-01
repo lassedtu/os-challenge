@@ -58,8 +58,15 @@ int main(int argc, char **argv)
     }
 
     signal(SIGPIPE, SIG_IGN);
-    signal(SIGINT, request_stop);
-    signal(SIGTERM, request_stop);
+
+    // Install stop handlers without SA_RESTART so a blocking accept() returns
+    // EINTR on SIGINT/SIGTERM, letting the accept loop observe stop_requested
+    struct sigaction stop_action = {0};
+    stop_action.sa_handler = request_stop;
+    sigemptyset(&stop_action.sa_mask);
+    stop_action.sa_flags = 0;
+    sigaction(SIGINT, &stop_action, NULL);
+    sigaction(SIGTERM, &stop_action, NULL);
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (server_fd < 0)
