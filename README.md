@@ -1,53 +1,27 @@
-# OS Challenge
+## OS-Challenge Milestone Submission
 
-This version of the project contains the initial implementation and setup of environment for the os challenge (Lasses version).
+This is our submission of the os-challenge project, for the milestone.
 
-The idea is that each group member sepperately makes something that works and we then later combine together what works best for us individually into a "frankenstein" server with the best from each implementations.
+We've been working extra hard on it and hope that it is satisfiable. 
+While we are already very far along with the project, we still have many ideas on how to improve this and expect to turn in an even faster version with better management of priorities on the final deadline.
 
-## How to run on Apple Silicon
+## Small Report Preview
 
-VMware Fusion and Vagrant should be installed and set up.
+This section is meant to serve as a small preview of our report which is still in progress. It is still missing the latest change which has not been formally formatted and is not yet ready to put in the report, however it contains many of our design considerations and results of analysis.
+To not dump the entire report in this README, a few of our conclusions based on experiments has been pasted below.
 
-From the repository root:
+> Note that this is just a way to show our early findings, leading to insight about choices in coding, and does not have to be read.
 
-```sh
-cd arm64
-vagrant up server
-vagrant up client
-```
+### Empirical Analysis of Request Distribution Conclusion
+The results in this section prove that the bell-shaped distribution hypothesis from Section 1.1.1 is incorrect for the final configuration. This rules out precomputed "hot-zone" caching. Because randomized start values are scattered searches across the entire value space, the "hot-zones" only exist at the relative offset, not the absolute number the hash depends on. On the other hand, caching existing answers was found to be highly effective, cutting overall search work by roughly $20%$ at very minimal cost. Based on these findings, a concurrent hash table keyed by the 32-byte request hash will be implemented. Before running a search, the system will check the cache and immediately store any new answers it finds. High-priority requests are also given priority during both cache lookups and searches, which will help improve the overall priority-weighed score.
 
-In one terminal start the server:
+### Viability of Shared Search-Space for Batching Conclusion
+With the `run-client-final.sh` configuration, two requests with genuinely different answers will essentially never share any part of their search space. Figure 3 and 4's flat "interval overlap" were already suggestive of this, and this section confirms it. Because a batch containing more than one distinct request almost never has a legitimate reason to exist, the proposed batch-selection idea (the combination search, the S(B)|P(B) trade-off, and alpha-beta pruning over the resulting tree) unfortunately has nothing to operate on, and therefore will not be implemented.
 
-```sh
-vagrant ssh server
-cd os-challenge-common
-make
-./server 5003
-```
 
-In another terminal run the client:
+### Shared Pool of Work (Single Worker per Request) Conclusion
+Under the final workload, the server reaches the highest performance with a small worker pool, reaching its smallest latency at 2 workers. The first transition from one to two workers provides the biggest speed-up by overlapping search execution with request handling, beyond this point, the low concurrency of the workload leaves additional cores idling and introduces thread overhead. For this reason, the worker count should remain low for this configuration rather than scaling to the 16 available cores.
 
-```sh
-cd arm64
-vagrant ssh client
-cd os-challenge-common
-./run-client.sh
-```
+However, this optimum depends heavily on how fast requests come in. If the workload had shorter gaps between requests or sudden traffic spikes, more workers would stay busy, which would shift the ideal worker count higher.
 
-Build the server inside the Linux VM. A macOS binary will not run on Linux.
-
-## Notes on current version
-
-For now the server uses a linear reverse-hashing function. It checks each number in the request range in order. It also uses a simple byte comparison for hashes.
-
-This was hacked together from different code snippets i wrote while planning for the project. This code was added rewritten to make something that works from the start and to test the server + the rest of the environment, not to make something that is acceptable to turn in.
-
-In fact the entire codebase of this version has been hacked together from different tests and code snippets written while preparing for the project, with added proper documentation and some improvements.
-
-The focus of this version of the code is simply to get a server up and running and a dev environment that can cleanly build (make / make clean) as well as properly documenting and splitting up code to relevant files.
-
-## Extra notes
-
-The server executable must be at the root folder as specified in the os challenge doc, however the build artifacts / object files are placed in the /build folder.
-
-The src folder contains all the code associated with the project.
+Additionally, these tests only check for assigning one full request per worker. Another strategy is splitting a single request across multiple workers to see if that better utilizes all 16 available CPUs, an approach explored in a subsequent section.
