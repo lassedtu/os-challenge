@@ -6,12 +6,15 @@
 #ifndef TASK_QUEUE_H
 #define TASK_QUEUE_H
 
+#include <stdint.h>
+
 /**
  * @brief Represents a task to be processed by the worker threads
  */
 struct task
 {
-    int client_fd; // File descriptor for the client connection associated with this task
+    int client_fd;    // File descriptor for the client connection associated with this task
+    uint8_t priority; // Priority byte (higher value = higher priority)
 };
 
 /**

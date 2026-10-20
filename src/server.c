@@ -8,6 +8,7 @@
 #include "hash_cache.h"
 #include "task_queue.h"
 #include "worker_pool.h"
+#include "messages.h"
 
 #include <errno.h>
 #include <netinet/in.h>
@@ -115,6 +116,16 @@ int main(int argc, char **argv)
 
         struct task task;
         task.client_fd = client_fd;
+        task.priority = 0;
+
+        /* Peek the single priority byte (last byte of the request header) without consuming it, so the worker's later full read still sees the whole packet, giving the priority queue a key to use for sorting. */
+        unsigned char header[PACKET_REQUEST_SIZE];
+        ssize_t peeked = recv(client_fd, header, sizeof(header), MSG_PEEK);
+        if (peeked == (ssize_t)sizeof(header))
+        {
+            task.priority = header[PACKET_REQUEST_PRIO_OFFSET];
+        }
+
         task_queue_push(task);
     }
 
