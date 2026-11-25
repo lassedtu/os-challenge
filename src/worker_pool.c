@@ -58,7 +58,7 @@ struct slave_ctx
 struct worker_group
 {
     pthread_t master;                          // The master thread
-    struct slave_ctx slaves[SLAVES_PER_GROUP]; // Slave contexts
+    struct slave_ctx slaves[SLAVE_ARRAY_SIZE]; // Slave contexts (only the first SLAVES_PER_GROUP are used)
 
     int completed;              // Slaves that finished the current job
     pthread_mutex_t done_mutex; // Guards completed
@@ -227,12 +227,18 @@ static void handle_task(struct worker_group *group, int client_fd)
     if (read_all(client_fd, request_packet, sizeof(request_packet)) == 0 &&
         parse_request(request_packet, &request) == 0)
     {
+#ifdef DISABLE_CACHE
+        // Analysis build only: do not use the repeat-cache.
+        // Each request is solved from the start, so cache hits do not hide the search time.
+        solve_request(group, &request, &answer);
+#else
         // hash_cache_lookup returns non-zero on a hit; only search on a miss
         if (!hash_cache_lookup(request.hash, &answer))
         {
             solve_request(group, &request, &answer);
             hash_cache_insert(request.hash, answer);
         }
+#endif
         encode_response(answer, response_packet);
         write_all(client_fd, response_packet, sizeof(response_packet));
     }

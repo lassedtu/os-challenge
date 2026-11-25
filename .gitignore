@@ -10,3 +10,8 @@ server
 .vscode/
 
 os-challenge-doc.pdf
+analysis/report_findings.md
+
+analysis/__pycache__
+
+.fuse_hidden*
