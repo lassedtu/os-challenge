@@ -6,7 +6,12 @@
  * I/O, and splits the search range across itself and its slave workers. All
  * participants scan their "sub-ranges" concurrently until one finds the answer,
  * at which point a shared cancellation flag is raised so the others stop early.
+ *
+ * The number of threads is set at runtime. See worker_pool.h.
  */
+
+// Necessary for sched_getaffinity() and CPU_COUNT(). Must be before all includes.
+#define _GNU_SOURCE
 
 #include "worker_pool.h"
 #include "task_queue.h"
@@ -17,9 +22,13 @@
 #include "messages.h"
 
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /**
@@ -57,15 +66,18 @@ struct slave_ctx
  */
 struct worker_group
 {
-    pthread_t master;                          // The master thread
-    struct slave_ctx slaves[SLAVES_PER_GROUP]; // Slave contexts
+    pthread_t master;          // The master thread
+    struct slave_ctx *slaves;  // Slave contexts (slave_count elements)
+    int slave_count;           // Number of slaves in this group. The group size is slave_count + 1.
+    uint64_t *bounds;          // Slice limits for the current request (slave_count + 2 elements)
 
     int completed;              // Slaves that finished the current job
     pthread_mutex_t done_mutex; // Guards completed
     pthread_cond_t done_cond;   // Signals slave completion to master
 };
 
-static struct worker_group groups[MASTER_COUNT];
+static struct worker_group *groups; // Array of master_count groups
+static int master_count;            // Number of groups (and masters)
 
 /**
  * @brief Records the answer if this participant is the first to find it
@@ -177,13 +189,15 @@ static void solve_request(struct worker_group *group, const struct request *requ
     uint64_t end = request->end;
     uint64_t total = (end > start) ? (end - start) : 0;
 
-    // Partition [start, end) into GROUP_SIZE contiguous, near-equal slices
-    uint64_t base = total / GROUP_SIZE;
-    uint64_t remainder = total % GROUP_SIZE;
+    // Partition [start, end) into group_size contiguous, near-equal slices
+    int group_size = group->slave_count + 1;
+    uint64_t base = total / (uint64_t)group_size;
+    uint64_t remainder = total % (uint64_t)group_size;
 
-    uint64_t bounds[GROUP_SIZE + 1];
+    // Only the master of this group uses this array, thus no lock is necessary.
+    uint64_t *bounds = group->bounds;
     bounds[0] = start;
-    for (int i = 0; i < GROUP_SIZE; i++)
+    for (int i = 0; i < group_size; i++)
     {
         uint64_t width = base + ((uint64_t)i < remainder ? 1 : 0);
         bounds[i + 1] = bounds[i] + width;
@@ -191,8 +205,8 @@ static void solve_request(struct worker_group *group, const struct request *requ
 
     group->completed = 0;
 
-    // Slices 1..SLAVES_PER_GROUP go to the slaves, slice 0 is the master's own work
-    for (int i = 0; i < SLAVES_PER_GROUP; i++)
+    // Slices 1..slave_count go to the slaves, slice 0 is the master's own work
+    for (int i = 0; i < group->slave_count; i++)
     {
         dispatch_to_slave(&group->slaves[i], &job, bounds[i + 1], bounds[i + 2]);
     }
@@ -201,7 +215,7 @@ static void solve_request(struct worker_group *group, const struct request *requ
 
     // Wait until every slave has reported completion of its slice
     pthread_mutex_lock(&group->done_mutex);
-    while (group->completed < SLAVES_PER_GROUP)
+    while (group->completed < group->slave_count)
     {
         pthread_cond_wait(&group->done_cond, &group->done_mutex);
     }
@@ -258,16 +272,115 @@ static void *master_main(void *argument)
     return NULL;
 }
 
+/**
+ * @brief Counts the CPUs that this process can use
+ *
+ * sched_getaffinity() gives the CPUs that the process can run on. This is the same value as "nproc" gives.
+ * If the call fails, the function uses the number of online CPUs.
+ *
+ * @return The number of CPUs (1 or more)
+ */
+static int count_cpus(void)
+{
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    if (sched_getaffinity(0, sizeof(set), &set) == 0)
+    {
+        int count = CPU_COUNT(&set);
+        if (count > 0)
+        {
+            return count;
+        }
+    }
+
+    long online = sysconf(_SC_NPROCESSORS_ONLN);
+    return (online > 0) ? (int)online : 1;
+}
+
+/**
+ * @brief Gives the current time of the monotonic clock in nanoseconds
+ * @return The time in nanoseconds
+ */
+static uint64_t now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
 void worker_pool_start(void)
 {
-    for (int g = 0; g < MASTER_COUNT; g++)
+    // Find the total number of threads. Count the CPUs, or use the value from the build.
+    uint64_t count_start = now_ns();
+#ifdef WORKERS_TOTAL
+    int workers_total = WORKERS_TOTAL;
+    const char *source = "set at compile time";
+#else
+    int workers_total = count_cpus();
+    const char *source = "counted at runtime";
+#endif
+    uint64_t count_ns = now_ns() - count_start;
+
+#ifdef MASTER_COUNT
+    master_count = MASTER_COUNT;
+#else
+    master_count = DEFAULT_MASTER_COUNT;
+#endif
+    if (workers_total < 1)
+    {
+        workers_total = 1;
+    }
+    // Each group must have a master, thus there cannot be more masters than threads.
+    if (master_count > workers_total)
+    {
+        master_count = workers_total;
+    }
+    if (master_count < 1)
+    {
+        master_count = 1;
+    }
+
+    // Divide the threads between the groups. If the division is not equal,
+    // the first groups get one more thread (for example 5 threads gives groups of 3 and 2).
+    int base_size = workers_total / master_count;
+    int extra = workers_total % master_count;
+
+    groups = calloc((size_t)master_count, sizeof(*groups));
+    if (groups == NULL)
+    {
+        perror("calloc");
+        exit(EXIT_FAILURE);
+    }
+
+    // Write the shape of the pool to stderr. The analysis script reads this line.
+    fprintf(stderr, "worker_pool: threads=%d (%s, %llu ns) masters=%d group_sizes=", workers_total, source,
+            (unsigned long long)count_ns, master_count);
+    for (int g = 0; g < master_count; g++)
+    {
+        fprintf(stderr, "%s%d", g > 0 ? "," : "", base_size + (g < extra ? 1 : 0));
+    }
+    fprintf(stderr, "\n");
+
+    for (int g = 0; g < master_count; g++)
     {
         struct worker_group *group = &groups[g];
+        int group_size = base_size + (g < extra ? 1 : 0);
+        group->slave_count = group_size - 1;
         group->completed = 0;
         pthread_mutex_init(&group->done_mutex, NULL);
         pthread_cond_init(&group->done_cond, NULL);
 
-        for (int s = 0; s < SLAVES_PER_GROUP; s++)
+        // calloc(0, ...) can return NULL, thus allocate at least one element.
+        size_t slave_elements = (size_t)(group->slave_count > 0 ? group->slave_count : 1);
+        group->slaves = calloc(slave_elements, sizeof(*group->slaves));
+        group->bounds = calloc((size_t)group_size + 1, sizeof(*group->bounds));
+        if (group->slaves == NULL || group->bounds == NULL)
+        {
+            perror("calloc");
+            exit(EXIT_FAILURE);
+        }
+
+        for (int s = 0; s < group->slave_count; s++)
         {
             struct slave_ctx *ctx = &group->slaves[s];
             ctx->group = group;
@@ -288,16 +401,16 @@ void worker_pool_start(void)
 void worker_pool_join(void)
 {
     // Masters exit once task_queue_pop returns -1 after task_queue_shutdown
-    for (int g = 0; g < MASTER_COUNT; g++)
+    for (int g = 0; g < master_count; g++)
     {
         pthread_join(groups[g].master, NULL);
     }
 
     // With masters gone, no new work will be dispatched; release the slaves
-    for (int g = 0; g < MASTER_COUNT; g++)
+    for (int g = 0; g < master_count; g++)
     {
         struct worker_group *group = &groups[g];
-        for (int s = 0; s < SLAVES_PER_GROUP; s++)
+        for (int s = 0; s < group->slave_count; s++)
         {
             struct slave_ctx *ctx = &group->slaves[s];
             pthread_mutex_lock(&ctx->mutex);
@@ -306,7 +419,7 @@ void worker_pool_join(void)
             pthread_mutex_unlock(&ctx->mutex);
         }
 
-        for (int s = 0; s < SLAVES_PER_GROUP; s++)
+        for (int s = 0; s < group->slave_count; s++)
         {
             struct slave_ctx *ctx = &group->slaves[s];
             pthread_join(ctx->thread, NULL);
@@ -316,5 +429,11 @@ void worker_pool_join(void)
 
         pthread_mutex_destroy(&group->done_mutex);
         pthread_cond_destroy(&group->done_cond);
+        free(group->slaves);
+        free(group->bounds);
     }
+
+    free(groups);
+    groups = NULL;
+    master_count = 0;
 }

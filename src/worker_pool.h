@@ -6,22 +6,18 @@
 #ifndef WORKER_POOL_H
 #define WORKER_POOL_H
 
-// Total number of worker threads in all groups.
-// The value is the same as the number of CPUs of the server VM (4), so each thread can have its own core.
-// The request splitting sweep on a 4-CPU VM gave the best results with one thread for each core
-// (see analysis/split_sweep.py on the request-splitting-analysis branch).
-#define WORKERS_TOTAL 4
+// The number of worker threads is set when the server starts.
+// The server counts the CPUs that it can use and starts one thread for each CPU.
+// The server VM can have 4 to 16 CPUs, thus a fixed number of threads is not correct for all VMs.
+//
+// Two values can be set at compile time for experiments (for example -DWORKERS_TOTAL=4):
+//   WORKERS_TOTAL  Total number of threads. If you set it, the server does not count the CPUs.
+//   MASTER_COUNT   Number of masters. If you do not set it, the server uses DEFAULT_MASTER_COUNT.
+// The threads are divided between the masters. If the division is not equal, the first groups get one more thread.
 
-// Number of master workers. Each master gets tasks from the priority queue.
-// 2 masters with 2 threads each (2x2) was equal to the best result (4x1) in the sweep.
-// This shape also splits each request in two, which helps when only one request is in the queue.
-#define MASTER_COUNT 2
-
-// Threads per group, including the master itself (master + slaves)
-#define GROUP_SIZE (WORKERS_TOTAL / MASTER_COUNT)
-
-// Number of slave workers owned by each master
-#define SLAVES_PER_GROUP (GROUP_SIZE - 1)
+// Number of masters when MASTER_COUNT is not set.
+// Each master gets tasks from the priority queue and splits each request between the threads of its group.
+#define DEFAULT_MASTER_COUNT 2
 
 /**
  * @brief Starts the worker pool, creating all master and slave threads
