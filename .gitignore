@@ -5,10 +5,13 @@ compile_commands.json
 bin/
 server
 
-analysis/
-
 .DS_Store
 
 .vscode/
 
 os-challenge-doc.pdf
+analysis/__pycache__
+
+.fuse_hidden*
+# Copy of the original server for analysis/core_count_test.py
+analysis/build_original/
